@@ -33,13 +33,14 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import socket
 import sys
 import time
 from collections import deque
 from pathlib import Path
 
-# 默认放在「工作区/.dsh-progress」：progress/ 的上一级就是工作区
+# 默认放在仓库目录下的 .dsh-progress
 _DEFAULT_DIR = Path(__file__).resolve().parent.parent / ".dsh-progress"
 ENV_DIR = "DSH_PROGRESS_DIR"
 ENV_OFF = "DSH_PROGRESS_OFF"
@@ -55,9 +56,23 @@ def progress_dir() -> Path:
     return Path(d) if d else _DEFAULT_DIR
 
 
+_UNSAFE_CHARS = re.compile(r"[^\w.\-]+", re.UNICODE)
+_RESERVED = {"CON", "PRN", "AUX", "NUL",
+             *(f"COM{i}" for i in range(1, 10)),
+             *(f"LPT{i}" for i in range(1, 10))}
+
+
 def _safe_name(s: str) -> str:
-    keep = "-_.0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
-    return "".join(c if c in keep else "_" for c in s)[:80] or "task"
+    """把任务名变成安全的文件名。
+
+    用 `\\w` 而不是 `[A-Za-z0-9_]`——Python 3 的 `\\w` 默认是 Unicode 的，
+    中文能原样保留。这一点很关键：早先按 ASCII 过滤时，
+    「下载视频」和「转码视频」都会被压成 `____`，两个任务互相覆盖。
+    """
+    out = _UNSAFE_CHARS.sub("_", str(s)).strip("._ ") or "task"
+    if out.split(".")[0].upper() in _RESERVED:      # Windows 保留设备名
+        out = "_" + out
+    return out[:80]
 
 
 def _fmt_dur(sec: float | None) -> str:

@@ -195,6 +195,20 @@ def main() -> int:
             with urllib.request.urlopen(req) as r:
                 acao = r.headers.get("Access-Control-Allow-Origin")
             eq(acao, "*", "带 CORS 头")
+
+            # 重复启动检查：把扫描范围临时指到测试端口，看它认不认得出来
+            import hub as H
+            saved = (H.BASE_PORT, H.PORT_SPAN)
+            H.BASE_PORT, H.PORT_SPAN = port, 1
+            try:
+                eq(H.find_running_hub(), port, "find_running_hub 能认出已在跑的中枢")
+            finally:
+                H.BASE_PORT, H.PORT_SPAN = saved
+            H.BASE_PORT, H.PORT_SPAN = free_port(), 1
+            try:
+                eq(H.find_running_hub(), None, "空端口上返回 None（不会误判）")
+            finally:
+                H.BASE_PORT, H.PORT_SPAN = saved
     finally:
         hub.terminate()
         try:

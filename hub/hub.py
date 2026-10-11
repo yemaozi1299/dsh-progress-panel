@@ -251,12 +251,33 @@ def write_hub_file(d: Path, host: str, port: int) -> None:
         pass
 
 
+def find_running_hub(host: str = "127.0.0.1") -> int | None:
+    """扫一遍 8791~8800，看是不是已经有一个中枢在跑。
+
+    有的话就没必要再起一个：端口会越占越多，面板探到哪个也不确定。
+    """
+    import urllib.request
+    for p in range(BASE_PORT, BASE_PORT + PORT_SPAN):
+        if not port_in_use(p, host):
+            continue
+        try:
+            with urllib.request.urlopen(f"http://{host}:{p}/api/health", timeout=0.6) as r:
+                info = json.loads(r.read().decode("utf-8"))
+            if info.get("ok"):
+                return p
+        except Exception:
+            continue          # 这个端口上的东西不是我们
+    return None
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="进度中枢（只读本地服务）")
     ap.add_argument("--host", default="127.0.0.1", help="默认只监听本机")
     ap.add_argument("--port", type=int, default=None,
                     help=f"起始端口；被占用时自动往后找（默认 {BASE_PORT}）")
     ap.add_argument("--dir", default=None, help="进度目录（默认 工作区/.dsh-progress）")
+    ap.add_argument("--allow-multiple", action="store_true",
+                    help="就算已经有一个在跑也再起一个")
     args = ap.parse_args(argv)
 
     STATE["dir"] = Path(args.dir).resolve() if args.dir else progress_dir()
@@ -265,6 +286,15 @@ def main(argv=None) -> int:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
+
+    # 只在「用户没有明确指定端口」时才做重复检查。
+    # 明确给了 --port 就是有意要起一个独立的实例（测试、或临时换个目录看数据）。
+    if not args.allow_multiple and args.port is None:
+        running = find_running_hub(args.host)
+        if running is not None:
+            print(f"已经有一个进度中枢在跑了： http://{args.host}:{running}/")
+            print("（这次什么都不用做；确实要再起一个就加 --allow-multiple）")
+            return 0
 
     start = args.port or BASE_PORT
     port = pick_port(start)
