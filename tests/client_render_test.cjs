@@ -1,12 +1,12 @@
-/**
+﻿/**
  * dsh-progress-panel/client.js（悬浮窗版）的离线渲染测试。
  *
  * 我装不了这个插件，所以改完必须自己先证一遍：用一套**最小 React 运行时**
  * 把组件真跑起来渲染，喂假的 hub 数据和一个**假的 DOM 节点**，
- * 断言它画成什么样、拖拽吸附算得对不对。
+ * 断言它画成什么样、拖拽落点算得对不对。
  *
  * 能抓到：语法错误、undefined 变量、渲染抛异常、槽位/参数写错、端口探测、
- *         进度条与文案算错、展开收起、日志、拖拽吸附、位置持久化。
+ *         进度条与文案算错、展开收起、日志、拖拽落点、位置持久化。
  * 抓不到：真实 React 行为、真实主题观感（要人眼看）。
  *
  *   node tests/client_render_test.js
@@ -351,7 +351,7 @@ const pt = (x, y, target) => ({
   r = await renderNow();
   eq(byClass(r.tree, "dshpp-pill").length, 1, "「收起」按钮回到药丸");
 
-  console.log("\n-- 拖拽 + 吸附到角 --");
+  console.log("\n-- 拖拽（自由落点，不吸附）--");
   store.clear();
   root = byClass(r.tree, "dshpp-fab")[0];
   // 药丸 240x32，点在 (1100,590)、窗口左上默认 (1026,578) → 抓取偏移 (74,12)
@@ -371,11 +371,12 @@ const pt = (x, y, target) => ({
   byClass(r.tree, "dshpp-fab")[0].props.onPointerUp(pt(1150, 620));
   await settle(4);
   r = await renderNow();
-  const snapped = byClass(r.tree, "dshpp-fab")[0].props.style;
-  // 1280x800 里药丸 240x32：四角是 (14,14) (1026,14) (14,754) (1026,754)
-  ok(snapped.left === "1026px" && snapped.top === "754px",
-     "松手吸附到最近的角（右下）", `left=${snapped.left} top=${snapped.top}`);
+  const dropped = byClass(r.tree, "dshpp-fab")[0].props.style;
+  // 落在松手的位置 (1036,608)，而不是被吸到角落 (1026,754)
+  eq([dropped.left, dropped.top], ["1036px", "608px"],
+     "松手停在原地，不做吸附", `left=${dropped.left} top=${dropped.top}`);
   ok(store.has("dsh-progress-panel:pos"), "位置写进了 localStorage", store.get("dsh-progress-panel:pos"));
+  eq(JSON.parse(store.get("dsh-progress-panel:pos")), { x: 1036, y: 608 }, "存下来的就是落点");
   ok(!String(byClass(r.tree, "dshpp-fab")[0].props.className).includes("dragging"), "松手后去掉 dragging 类");
 
   console.log("\n-- 位置持久化 --");
@@ -388,7 +389,7 @@ const pt = (x, y, target) => ({
   const r2 = await drive(mini, reg.Comp);
   ok(!!byClass(r2.tree, "dshpp-fab")[0], "重新挂载后正常渲染");
   const st2 = byClass(r2.tree, "dshpp-fab")[0].props.style;
-  eq([st2.left, st2.top], ["1026px", "754px"], "重新挂载后沿用存下来的位置");
+  eq([st2.left, st2.top], ["1036px", "608px"], "重新挂载后沿用存下来的位置");
 
   console.log("\n-- 按钮不触发拖拽 --");
   const before = JSON.stringify(store.get("dsh-progress-panel:pos"));

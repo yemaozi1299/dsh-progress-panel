@@ -4,9 +4,9 @@
  * 注册进 `shell.overlay` 槽位，在界面上画一个**可拖拽的悬浮控件**：
  *   · 收起时是一颗小药丸：状态点 + 任务名 + 迷你进度条 + 百分比
  *   · 点一下展开成卡片：进度条、已完成/总数、速率、ETA、最新消息、可滚动的日志尾巴
- *   · 按住可以拖走，松手自动吸附到最近的角，位置记在 localStorage
+ *   · 按住可以拖走，停在放下的地方（不吸附），位置记在 localStorage
  *
- * 参考了 dsh-whale-widget 的观感（右下角悬浮、可拖动、吸附、z-index 很高），
+ * 参考了 dsh-whale-widget 的观感（右下角悬浮、可拖动、z-index 很高），
  * 但没有沿用它的做法——鲸鱼是把脚本注入每个页面直接改 DOM，
  * 而官方文档明确不建议在组件外写 DOM。这里走的是**正规槽位**，
  * 所以主题变量、深浅色切换、卸载清理都是宿主管的。
@@ -254,8 +254,10 @@ window.__ModuleLoader__.load({
               if (dh && (y + prev.h / 2) > H / 2) y -= dh;   // 贴下边 → 往上长
             }
           }
-          x = clamp(x, MARGIN, Math.max(MARGIN, W - w - MARGIN));
-          y = clamp(y, MARGIN, Math.max(MARGIN, H - hh - MARGIN));
+          // 夹取用的是 EDGE 而不是 MARGIN：拖动时可以贴到很边上，
+          // 重新挂载后必须停在同一个地方，两处留白不一致会让窗口自己挪位置。
+          x = clamp(x, EDGE, Math.max(EDGE, W - w - EDGE));
+          y = clamp(y, EDGE, Math.max(EDGE, H - hh - EDGE));
           if (p && p.x === x && p.y === y) return p;   // 没变就别触发重渲染
           return { x, y };
         });
@@ -323,23 +325,14 @@ window.__ModuleLoader__.load({
         if (dragging) setDragging(false);
         if (!d.moved) { setOpen((v) => !v); return; }   // 没怎么动 → 当成点击
 
-        // 吸附到最近的角。尺寸以此刻的真实 DOM 为准（拖拽中可能展开过）
+        // 就停在松手的地方，不做吸附。
+        // 位置仍然会被夹在可视区内（拖动时已经夹过，这里补一次防止窗口在拖拽中变小）。
         const w = el && el.offsetWidth ? el.offsetWidth : d.w;
         const hh = el && el.offsetHeight ? el.offsetHeight : d.h;
-        const W = window.innerWidth, H = window.innerHeight;
-        const corners = [
-          { x: MARGIN, y: MARGIN },
-          { x: W - w - MARGIN, y: MARGIN },
-          { x: MARGIN, y: H - hh - MARGIN },
-          { x: W - w - MARGIN, y: H - hh - MARGIN },
-        ];
-        let best = corners[0], bestD = Infinity;
-        for (const c of corners) {
-          const dd = (c.x - d.x) * (c.x - d.x) + (c.y - d.y) * (c.y - d.y);
-          if (dd < bestD) { bestD = dd; best = c; }
-        }
-        paint(best.x, best.y);
-        setPos(best);
+        const nx = clamp(d.x, EDGE, Math.max(EDGE, window.innerWidth - w - EDGE));
+        const ny = clamp(d.y, EDGE, Math.max(EDGE, window.innerHeight - hh - EDGE));
+        paint(nx, ny);
+        setPos({ x: nx, y: ny });
       };
 
       const toggleLog = (id) => {

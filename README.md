@@ -105,7 +105,7 @@ python hub\demo_task.py --minutes 10
 | 操作 | 效果 |
 |---|---|
 | **点一下** | 在「小药丸」和「卡片」之间切换 |
-| **按住拖走** | 松手自动**吸附到最近的角**，位置记在 localStorage |
+| **按住拖走** | 停在放下的地方（不吸附），位置记在 localStorage |
 | 卡片里的「日志」 | 展开该任务的日志尾巴（最近 200 行，自动滚到底） |
 
 默认位置是右下角、离底边 190px —— 特意抬高的，因为小鲸鱼挂件占着右下角。
@@ -146,13 +146,13 @@ localStorage.removeItem('dsh-progress-panel:pos'); location.reload()
 ## 测试
 
 ```powershell
-node tests\client_render_test.cjs     # 55 项：渲染、槽位、拖拽吸附、越界、持久化
+node tests\client_render_test.cjs     # 56 项：渲染、槽位、拖拽落点、越界、持久化
 python tests\test_hub.py             # 30 项：进度生命周期、原子写、stale、HTTP 接口、CORS
 ```
 
 `client_render_test.cjs` 用一套最小 React 运行时把 `client.js` 里的组件**真跑起来渲染**，
 并喂一个**有状态的假 DOM 节点**（尺寸随药丸/卡片变化，`style` 是活的，所以直接写 DOM 也读得到）。
-拖拽吸附、展开不越界都是**真算过**的。
+拖拽落点、展开不越界都是**真算过**的。
 
 ---
 
