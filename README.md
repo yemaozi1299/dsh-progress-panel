@@ -1,4 +1,4 @@
-﻿# dsh-progress-panel
+# dsh-progress-panel
 
 给 **DeepSeek Harness (DSH)** 用的长任务进度悬浮窗。
 
@@ -91,6 +91,13 @@ with Progress("my-task", total=1529, unit="页", title="我的抓取任务") as 
 ```
 
 细节见 [`hub/README.md`](hub/README.md)。
+不想改代码，就包一层 `hub/watch.py`：
+
+```powershell
+python hub\watch.py --title "下载视频" --unit 个 --count-regex "Downloaded" -- yt-dlp <url>
+```
+
+**想直接上手真实项目？看 [`USAGE.md`](USAGE.md)** —— 四条接入路线、场景配方、会踩的坑。
 
 想先看看效果：
 

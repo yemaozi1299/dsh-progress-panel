@@ -282,7 +282,10 @@ def read_tasks(directory: Path | None = None) -> list[dict]:
         if f.name == "hub.json" or f.name.startswith((".", "_")):
             continue
         try:
-            obj = json.loads(f.read_text(encoding="utf-8"))
+            # utf-8-sig：容忍 BOM。PowerShell 的 `Set-Content -Encoding UTF8`
+            # 是会写 BOM 的，而那种文件用纯 utf-8 读出来的第一个字符是 \ufeff，
+            # json 直接解析失败 —— 表现是「文件明明在，看板却什么都没有」。
+            obj = json.loads(f.read_text(encoding="utf-8-sig"))
         except (OSError, ValueError):
             continue
         if not isinstance(obj, dict) or not obj.get("task_id"):
@@ -303,7 +306,7 @@ def read_log(task_id: str, tail: int = 200, directory: Path | None = None) -> li
     if not p.is_file():
         return []
     try:
-        lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+        lines = p.read_text(encoding="utf-8-sig", errors="replace").splitlines()
     except OSError:
         return []
     return lines[-tail:]

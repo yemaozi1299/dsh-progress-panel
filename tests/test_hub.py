@@ -130,6 +130,18 @@ def main() -> int:
     (tmp / "broken.json").unlink()
     ok(before > 0, "坏 JSON 不会让 read_tasks 崩", f"{before} 个任务")
 
+    print("\n== 容忍 BOM（PowerShell 的 Set-Content -Encoding UTF8 会写 BOM）==")
+    bom_body = json.dumps({"task_id": "t-bom", "title": "带 BOM 的任务", "status": "running",
+                           "done": 1, "total": 4, "unit": "步", "pct": 25.0,
+                           "updated_at": time.time()}, ensure_ascii=False)
+    (tmp / "t-bom.json").write_bytes(b"\xef\xbb\xbf" + bom_body.encode("utf-8"))
+    tb = next((x for x in read_tasks() if x["task_id"] == "t-bom"), None)
+    ok(tb is not None, "带 BOM 的进度文件能被读出来")
+    if tb:
+        eq(tb["pct"], 25.0, "BOM 文件里的字段解析正确")
+        eq(tb["title"], "带 BOM 的任务", "中文没被 BOM 影响")
+    (tmp / "t-bom.json").unlink()
+
     print("\n== stale 判定 ==")
     stale = {"task_id": "t-stale", "status": "running", "updated_at": time.time() - 999,
              "done": 1, "total": 10, "pct": 10, "title": "卡住的"}
