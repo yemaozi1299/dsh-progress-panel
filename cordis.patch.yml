@@ -1,0 +1,8 @@
+# 把进度面板挂进当前 profile 的配置树。
+#
+# 这个文件是「挂载声明」：DSH 启动时按 bundle 层栈叠加各插件 patch，
+# 这一条把面板的 Host 半边（index.js，实际是空的）插进树里。
+# 渲染完全由 client.js 负责，它注册进 conversation.composer.dock 槽位。
+- insert:
+    - id: dsh-progress-panel
+      name: '@local/dsh-progress-panel'

@@ -1,0 +1,21 @@
+# 运行时产生的进度数据（每个任务一个 json + 一个 log），不进仓库
+.dsh-progress/
+hub/.dsh-progress/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Node（这个插件刻意零依赖，正常不会有）
+node_modules/
+package-lock.json
+pnpm-lock.yaml
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp

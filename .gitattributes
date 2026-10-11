@@ -1,0 +1,9 @@
+# 仓库里统一用 LF，检出时按平台习惯
+* text=auto
+
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary

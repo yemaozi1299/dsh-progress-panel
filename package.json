@@ -1,0 +1,23 @@
+{
+  "name": "@local/dsh-progress-panel",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "在界面右下角显示一个可拖拽的悬浮窗，实时展示本机长任务的进度（读本地进度中枢 127.0.0.1:8791-8800）",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-layout"
+      ]
+    }
+  }
+}
