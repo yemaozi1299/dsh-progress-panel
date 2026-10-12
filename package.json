@@ -2,11 +2,34 @@
   "name": "@local/dsh-progress-panel",
   "version": "0.1.0",
   "private": true,
+  "description": "DSH 插件：界面右下角显示长任务进度悬浮窗。自带本地进度服务，装完即用，不需要额外进程。",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "progress",
+    "long-running-task"
+  ],
+  "license": "MIT",
   "type": "module",
-  "description": "在界面右下角显示一个可拖拽的悬浮窗，实时展示本机长任务的进度（读本地进度中枢 127.0.0.1:8791-8800）",
+  "main": "index.js",
+  "files": [
+    "index.js",
+    "server.js",
+    "board.js",
+    "client.js",
+    "cordis.patch.yml",
+    "hub",
+    "README.md",
+    "USAGE.md"
+  ],
+  "scripts": {
+    "test": "node tests/host_test.js && node tests/server_test.js && node tests/client_render_test.cjs && python tests/test_progress.py"
+  },
   "exports": {
     ".": "./index.js",
-    "./client": "./client.js"
+    "./client": "./client.js",
+    "./server": "./server.js"
   },
   "dsh": {
     "bundle": {

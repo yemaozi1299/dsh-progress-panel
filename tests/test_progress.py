@@ -1,23 +1,22 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""hub/progress.py + hub/hub.py 的测试。
+"""hub/progress.py（Python 生产端）的测试。
 
-    python tests/test_hub.py
+    python tests/test_progress.py
 
 覆盖：生命周期（running/done/failed/cancelled）、原子写、读取工具、
-hub 的三个接口、CORS 头、hub.json 不被当成任务、stale 判定、DSH_PROGRESS_OFF。
+hub.json 不被当成任务、BOM 容错、stale 判定、DSH_PROGRESS_OFF。
+
+服务端（plugin 的 index.js / server.js）由 tests/server_test.cjs 覆盖。
 """
 
 from __future__ import annotations
 
 import json
 import os
-import socket
-import subprocess
 import sys
 import tempfile
 import time
-import urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -41,17 +40,11 @@ def eq(a, b, label):
     ok(a == b, label, f"期望 {b!r} 实际 {a!r}" if a != b else f"{a!r}")
 
 
-def free_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
-
-
 def main() -> int:
     tmp = Path(tempfile.mkdtemp(prefix="dsh-prog-test-"))
     os.environ["DSH_PROGRESS_DIR"] = str(tmp)
 
-    # 必须在设好环境变量之后再导入（模块级常量在导入时就读了）
+    # 必须在设好环境变量之后再导入（progress_dir() 在调用时读环境变量）
     import progress as P
     from progress import Progress, read_tasks, read_log
 
@@ -158,75 +151,6 @@ def main() -> int:
     p.finish()
     eq(len(list(tmp.glob("*.json"))), n_before, "关掉后不写任何文件")
     del os.environ["DSH_PROGRESS_OFF"]
-
-    print("\n== hub HTTP 接口 ==")
-    port = free_port()
-    hub = subprocess.Popen(
-        [sys.executable, str(ROOT / "hub" / "hub.py"), "--port", str(port), "--dir", str(tmp)],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8")
-    base = f"http://127.0.0.1:{port}"
-    try:
-        up = False
-        for _ in range(50):
-            try:
-                with urllib.request.urlopen(base + "/api/health", timeout=1) as r:
-                    health = json.load(r)
-                up = True
-                break
-            except Exception:
-                time.sleep(0.2)
-        ok(up, "hub 起来了", base)
-        if up:
-            eq(health["ok"], True, "/api/health 返回 ok")
-            eq(Path(health["dir"]), tmp, "hub 读的是同一个进度目录")
-
-            with urllib.request.urlopen(base + "/api/tasks") as r:
-                data = json.load(r)
-            ids = [t["task_id"] for t in data["tasks"]]
-            ok("t-done" in ids, "/api/tasks 列出了任务", f"{len(ids)} 个")
-            ok("hub.json" not in str(ids), "/api/tasks 里没有 hub.json")
-
-            with urllib.request.urlopen(base + f"/api/tasks/t-done?tail=3") as r:
-                one = json.load(r)
-            eq(one["task"]["task_id"], "t-done", "/api/tasks/<id> 返回任务")
-            ok(isinstance(one["log"], list), "/api/tasks/<id> 带日志数组")
-
-            try:
-                urllib.request.urlopen(base + "/api/tasks/does-not-exist")
-                ok(False, "不存在的任务返回 404")
-            except urllib.error.HTTPError as e:
-                eq(e.code, 404, "不存在的任务返回 404")
-
-            with urllib.request.urlopen(base + "/") as r:
-                page = r.read().decode("utf-8", "replace")
-                ctype = r.headers.get("Content-Type", "")
-            ok("进度看板" in page and "text/html" in ctype, "看板页可访问", f"{len(page)} 字节")
-
-            # CORS 头（面板跨端口要用）
-            req = urllib.request.Request(base + "/api/tasks", method="GET")
-            with urllib.request.urlopen(req) as r:
-                acao = r.headers.get("Access-Control-Allow-Origin")
-            eq(acao, "*", "带 CORS 头")
-
-            # 重复启动检查：把扫描范围临时指到测试端口，看它认不认得出来
-            import hub as H
-            saved = (H.BASE_PORT, H.PORT_SPAN)
-            H.BASE_PORT, H.PORT_SPAN = port, 1
-            try:
-                eq(H.find_running_hub(), port, "find_running_hub 能认出已在跑的中枢")
-            finally:
-                H.BASE_PORT, H.PORT_SPAN = saved
-            H.BASE_PORT, H.PORT_SPAN = free_port(), 1
-            try:
-                eq(H.find_running_hub(), None, "空端口上返回 None（不会误判）")
-            finally:
-                H.BASE_PORT, H.PORT_SPAN = saved
-    finally:
-        hub.terminate()
-        try:
-            hub.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            hub.kill()
 
     print(f"\n{'全部通过' if FAIL == 0 else '存在失败'}：{PASS} passed, {FAIL} failed\n")
     return 0 if FAIL == 0 else 1

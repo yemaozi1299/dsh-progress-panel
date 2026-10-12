@@ -23,87 +23,107 @@
 
 **没有任务时什么都不显示**，不占地方。
 
+## 装完即用，不需要额外启动任何东西
+
+进度服务跑在插件的 **Host 半边**里（`index.js` → `server.js`），
+用 `node:http` 在 DSH 自己的 Node 进程里起一个只读的本地服务。
+DSH 启动它就在，DSH 关掉它就没 —— **没有独立进程、不需要 Python、没有开机自启要配**。
+
+这一点是刻意设计的：早先的版本是个要用户自己双击启动的 Python 小服务，
+对「装个插件」来说太鸡肋了，忘了起就什么都看不到。
+
 ---
 
-## 它由两部分组成
+## 组成
 
 ```
-┌─────────────┐   写文件    ┌──────────────────┐   HTTP    ┌─────────────────┐
-│  你的脚本    │ ─────────▶ │  .dsh-progress/   │ ◀──────── │  DSH 界面里的    │
-│ (progress)  │            │  <任务>.json+.log │           │  悬浮窗 (client) │
-└─────────────┘            └──────────────────┘           └─────────────────┘
-                                    ▲                              │
-                                    └──── hub/hub.py（只读服务）────┘
+你的脚本 / 命令
+      │  写一个 JSON 文件（+ 可选一行行日志）
+      ▼
+$DSH_HOME/.dsh-progress/          ← 唯一的约定，两个生产端助手都往这儿写
+      ▲
+      │  读
+┌─────┴──────────────────────────────────────────┐
+│ DSH 进程里的插件                                │
+│  index.js  起服务 + 给 Agent 注入使用说明        │
+│  server.js 只读 HTTP（4 个端点）                 │
+│  client.js 右下角的悬浮窗（shell.overlay 槽位）  │
+└────────────────────────────────────────────────┘
 ```
 
-| 部分 | 是什么 |
+| 文件 | 作用 |
 |---|---|
-| `client.js` + `index.js` + `package.json` | **DSH 插件**。渲染那个悬浮窗，只负责显示 |
-| `hub/progress.py` | **约定**。任何 Python 脚本 `from progress import Progress` 就能上报进度 |
-| `hub/hub.py` | **中枢**。把 `.dsh-progress/` 暴露成 HTTP，插件和独立看板页都读它 |
+| `index.js` / `server.js` / `board.js` | Host 半边：起进度服务、注入提示词 |
+| `client.js` | 浏览器半边：悬浮窗 |
+| `hub/progress.py` | Python 生产端助手 |
+| `hub/progress.mjs` | Node 生产端助手 |
+| `hub/watch.py` | 包住任意命令的包装器 |
 
-中枢是**只读**的，只听 `127.0.0.1`，不执行任何东西。
-它另外自带一个独立看板页 —— 不想装插件的话，直接开 `http://127.0.0.1:8791/` 也能用。
+服务是**只读**的，只听 `127.0.0.1`，CORS 也只放行 `127.0.0.1` / `localhost` 的页面
+（早期版本用的是 `*`，那意味着你访问的任何网页都能读你的任务名）。
+它另外自带一个独立看板页：`http://127.0.0.1:8791/`。
 
 ---
 
 ## 安装
 
-### 1. 起中枢
-
-```powershell
-python hub\hub.py
-```
-
-默认 `127.0.0.1:8791`，端口被占会自动往后找（插件会在 8791~8800 里自己探，不用配）。
-**中枢不跑，悬浮窗就不显示任何东西** —— 这是故意的，免得没任务时界面上常驻一个报错。
-
-### 2. 装插件
-
-DSH 的 `desktop` profile **由 Electron 应用独占管理**，命令行装不了：
+DSH 的 `desktop` profile 由 Electron 应用独占管理，命令行装不了：
 
 ```
 $ dsh plugin --profile desktop add ...
 error: profile "desktop" is managed exclusively by the Electron application
 ```
 
-所以走界面：打开 DSH → **左侧边栏的 Plugins 页** → 安装 bundle → 填本仓库的**绝对路径**。
+走界面：打开 DSH → **左侧边栏的 Plugins 页** → 安装 bundle → 填本目录的**绝对路径**。
 
-装完刷新页面，控制台会出现：
+装完刷新页面。控制台会出现：
 
 ```
-[dsh-progress-panel] 已加载（悬浮窗版）；进度中枢请在 127.0.0.1:8791-8800 上运行 hub/hub.py
+[dsh-progress-panel] 已加载；进度服务由插件自身在 127.0.0.1:8791-8800 上提供
 ```
+
+**就这两步，没有第三步。** 想确认服务活着，浏览器打开 `http://127.0.0.1:8791/`。
 
 ---
 
-## 在自己的脚本里上报进度
+## 让脚本上报进度
 
 ```python
-import sys; sys.path.insert(0, "dsh-progress-panel/hub")
+import sys; sys.path.insert(0, r"<本目录>\hub")
 from progress import Progress
 
 with Progress("my-task", total=1529, unit="页", title="我的抓取任务") as p:
     for i, page in enumerate(pages, start=1):
         do_something(page)
-        p.update(i, message=f"第 {i} 页完成")   # 带 message 会立刻落盘并记一行日志
+        p.update(i, message=f"第 {i} 页完成")
 # 正常退出自动标 done；with 里抛异常自动标 failed
 ```
 
-细节见 [`hub/README.md`](hub/README.md)。
-不想改代码，就包一层 `hub/watch.py`：
+不想改代码就包一层：
 
 ```powershell
 python hub\watch.py --title "下载视频" --unit 个 --count-regex "Downloaded" -- yt-dlp <url>
 ```
 
-**想直接上手真实项目？看 [`USAGE.md`](USAGE.md)** —— 四条接入路线、场景配方、会踩的坑。
+**真实项目怎么接？看 [`USAGE.md`](USAGE.md)** —— 四条接入路线、场景配方、会踩的坑。
 
-想先看看效果：
+---
 
-```powershell
-python hub\demo_task.py --minutes 10
-```
+## 它显示哪些任务
+
+没有白名单 —— 认的是「有没有按约定写进度文件」。
+
+| 情况 | 结果 |
+|---|---|
+| `status: running` | 一直显示 |
+| `done` / `failed` / `cancelled` | 结束后再留 **1 分钟**，然后自动消失 |
+| 超过 120 秒没更新的 running | 仍显示，但标「疑似卡住」且不显示 ETA |
+| 缺 `task_id`、`hub.json`、`.`/`_` 开头、坏 JSON、带 BOM | 分别跳过或容忍，不会影响别的任务 |
+
+**排序**：在跑的在前，同组按最后更新时间倒序。
+**数量**：药丸只显示第一个 + `+N`；展开卡片列出全部，每个可单独看日志。
+
+> 独立看板页 `http://127.0.0.1:8791/` 不做筛选，把目录里的全列出来 —— 想翻历史用看板页。
 
 ---
 
@@ -111,13 +131,11 @@ python hub\demo_task.py --minutes 10
 
 | 操作 | 效果 |
 |---|---|
-| **点一下** | 在「小药丸」和「卡片」之间切换 |
+| **点一下** | 药丸 ⇄ 卡片 |
 | **按住拖走** | 停在放下的地方（不吸附），位置记在 localStorage |
-| 卡片里的「日志」 | 展开该任务的日志尾巴（最近 200 行，自动滚到底） |
+| 卡片里的「日志」 | 展开该任务的日志尾巴（最近 200 行） |
 
-默认位置是右下角、离底边 190px —— 特意抬高的，因为小鲸鱼挂件占着右下角。
-
-想恢复默认位置：
+恢复默认位置：
 
 ```js
 localStorage.removeItem('dsh-progress-panel:pos'); location.reload()
@@ -125,87 +143,62 @@ localStorage.removeItem('dsh-progress-panel:pos'); location.reload()
 
 ---
 
-## 它显示哪些任务
-
-**没有白名单** —— 它不是只认某几种任务，而是认「有没有按约定写进度文件」。
-只要有人往进度目录里写了合法的 JSON，它就会出现。
-
-**唯一的数据源**是进度中枢读的那个目录（默认本仓库下的 `.dsh-progress/`）。
-所以「能看到什么」= 「谁在往那个目录写」。
-
-**进入视野的三类来源**：
-
-| 来源 | 说明 |
-|---|---|
-| `from progress import Progress` | 你自己的 Python 脚本 |
-| `hub/watch.py -- <命令>` | 任何 CLI 工具（yt-dlp / ffmpeg / npm…） |
-| 手写 JSON | 任何语言，按 [`hub/README.md`](hub/README.md) 的字段写 |
-
-**显示与隐藏的规则**：
-
-| 情况 | 结果 |
-|---|---|
-| `status: running` | **一直显示**，不管多久没更新 |
-| `done` / `failed` / `cancelled` | 结束后**再留 1 分钟**，然后自动消失 |
-| 超过 120 秒没更新的 running | 仍然显示，但标「疑似卡住」且不显示 ETA |
-| 没有 `task_id` 字段的 JSON | 忽略 |
-| `hub.json`、以 `.` 或 `_` 开头的文件 | 忽略（中枢自己的文件） |
-| 内容不是合法 JSON | 跳过，不影响其他任务 |
-
-**排序**：在跑的排前面，同组内按最后更新时间倒序。
-
-**数量的处理**：药丸上只显示排第一的那个，后面用 `+N` 表示还有几个；
-点开卡片则**列出全部任务**（多了就滚动），每个都能单独展开日志。
-
-所以理论上同时跑几十个任务它也不会漏，但真要那样，看板页
-`http://127.0.0.1:8791/` 会比悬浮窗好用。
-
----
-
 ## 设计上的几个讲究
 
-**为什么走 `shell.overlay` 而不是照抄小鲸鱼？**
-小鲸鱼（`dsh-whale-widget`）是往每个页面注入脚本、直接改 DOM —— 它的客户端产物里
-`__ModuleLoader__` / `slots.inject` / `slots.register` 出现次数**都是 0**。
-能work，但官方文档明确写着「不要在组件外写 DOM、不要往 `document.body` 上挂东西」。
-这里走正规槽位，主题变量、深浅色切换、卸载清理、窗口 resize 都归宿主管。
+**服务内置，不靠 Agent 激活。** 也有人建议「让插件注入一段提示词，叫 Agent 去启动服务」——
+那个方向是错的：只有 Agent 在场才有效、时机也不对（服务必须在长任务开始前就活着），
+而且 Agent 起的进程正是最容易被回收的那种。现在提示词只用来解决**生产端**约定，
+服务端由宿主生命周期管。
 
-**拖拽不动 React。** `pointermove` 里直接写 `element.style`，并用 `requestAnimationFrame`
-合并成一帧一次；松手才 `setState`。最早那版每次移动都 `setState`，整棵树跟着重渲染，手感很僵。
+**走 `shell.overlay` 槽位而不是注入 DOM。** 另一个同类插件（`dsh-whale-widget`）是往每个页面
+注入脚本直接改 DOM —— 它的产物里 `__ModuleLoader__` / `slots.register` 出现次数都是 0。
+能跑，但官方文档明确不建议。正规槽位换来的是主题变量、深浅色切换、卸载清理、resize 全归宿主。
 
-**尺寸一变就重新贴边。** 展开时卡片比药丸高得多。这里让「贴着的那条边」保持不动、
-朝屏幕内生长（贴右就往左长，贴下就往上长），最后再夹一次，保证任何情况下整个窗口都在屏幕里。
-卡片本身还有 `max-height: calc(100vh - 28px)` + 内部滚动兜底。
+**拖拽不动 React。** `pointermove` 里直接写 `element.style` 并用 `requestAnimationFrame`
+合并成一帧一次，松手才 `setState`。最早那版每次移动都 `setState`，整棵树跟着重渲染，手感很僵。
 
-**定位用 `position: fixed`。** 这是验证过的：宿主自带的 Toast（同样注册在 `shell.overlay`）
-用的就是 `position:fixed; z-index:1100`，说明祖先元素上没有 transform 会把 fixed 带偏。
-本插件用 `z-index: 9600`（比 Toast 高、比鲸鱼低）。
+**尺寸一变就重新贴边。** 展开时卡片比药丸高得多。让「贴着的那条边」保持不动、
+朝屏幕内生长，最后再夹一次；卡片本身还有 `max-height` + 内部滚动兜底。
 
-**零依赖、零构建。** 没有 npm 依赖、没有编译步骤、没有安装脚本，不 import 任何 DSH 客户端包
-（官方明确禁止 import primitives），控件都是自己写的。样式全部走 `--dsw-alias-*` 主题变量，
-**每个都带兜底值**，token 改名最多让样式退化，不会渲染崩。
+**零依赖、零构建。** 不 import 任何 DSH 客户端包（官方明确禁止），控件自己写，
+样式全部走 `--dsw-alias-*` 主题变量且**每个都带兜底值**。
 
 ---
 
 ## 测试
 
 ```powershell
-node tests\client_render_test.cjs     # 56 项：渲染、槽位、拖拽落点、越界、持久化
-python tests\test_hub.py             # 30 项：进度生命周期、原子写、stale、HTTP 接口、CORS
+npm test
 ```
 
-`client_render_test.cjs` 用一套最小 React 运行时把 `client.js` 里的组件**真跑起来渲染**，
-并喂一个**有状态的假 DOM 节点**（尺寸随药丸/卡片变化，`style` 是活的，所以直接写 DOM 也读得到）。
-拖拽落点、展开不越界都是**真算过**的。
+| 套件 | 覆盖 |
+|---|---|
+| `tests/host_test.js` | 插件入口：起服务、注入提示词、卸载时关服务 |
+| `tests/server_test.js` | 服务：路由、排序、stale、BOM、**CORS 收紧**、端口递补 |
+| `tests/client_render_test.cjs` | 悬浮窗：渲染、拖拽落点、展开不越界、位置持久化 |
+| `tests/test_progress.py` | Python 生产端：生命周期、原子写、读取、BOM |
+
+共 150+ 项断言。前两个套件用假 ctx / 假 DOM 把真代码跑起来，不是纸面检查。
+
+`host_test.js` 覆盖不到的只有一点：**DSH 的插件加载器是否允许 Host 插件用 `node:http`**。
+已用假 ctx 验证了接口形状，这一条靠官方同款实现背书
+（`@deepseek-ai/dsh-host-webserver` 就是 `createServer` + `ctx.effect` 关服务）。
 
 ---
 
 ## 已知限制
 
-- 文字直接写简体中文，**没走 Client locale 服务**（单用户本地工具）
-- 只在 Windows + DSH desktop profile 上验证过
-- 一个任务的日志一次只展开一个（任务本身是全部列出来的）
-- `.dsh-progress/` 默认放在**本仓库目录**下；换位置用 `DSH_PROGRESS_DIR` 环境变量
+- 只在 **Windows + DSH desktop profile** 上验证过。代码是跨平台的，但没在 mac / Linux 跑过
+- 绑定 `127.0.0.1`，**不支持多机 / 远程**
+- **只存当前状态，不存历史**；要历史得自己把 `snapshot()` 落到别处
+- 界面文字硬编码简体中文，**没走 Client locale 服务**
+- 依赖宿主的 `shell.overlay` 槽位与 `--dsw-alias-*` 主题变量；槽位改名会导致面板不显示
+  （样式 token 改名只会退化，不会崩）
+- 进度目录默认 `$DSH_HOME/.dsh-progress`，改位置用 `DSH_PROGRESS_DIR` 环境变量或插件 `config.dir`
+
+## 发布
+
+见 [`PUBLISHING.md`](PUBLISHING.md)。
 
 ## License
 

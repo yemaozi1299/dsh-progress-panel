@@ -40,7 +40,7 @@ def main(argv=None) -> int:
     step_sec = duration / total
 
     print(f"演示任务开始：共 {total} 步，预计 {duration:.0f} 秒")
-    print("（另开一个终端跑 python progress/hub.py，然后打开看板或 DSH 面板）")
+    print("（DSH 开着的话，右下角就会出现进度条；也可以开 http://127.0.0.1:8791/ 看板页）")
 
     p = Progress("demo-download", total=total, unit="个",
                  title="演示：下载 240 个文件", extra={"说明": "这个是假任务，用来验证进度显示"})

@@ -40,8 +40,7 @@ import time
 from collections import deque
 from pathlib import Path
 
-# 默认放在仓库目录下的 .dsh-progress
-_DEFAULT_DIR = Path(__file__).resolve().parent.parent / ".dsh-progress"
+_DEFAULT_HOME_SUBDIR = ".dsh-progress"
 ENV_DIR = "DSH_PROGRESS_DIR"
 ENV_OFF = "DSH_PROGRESS_OFF"
 
@@ -51,9 +50,18 @@ _STALE_AFTER = 120.0           # 秒；超过这么久没更新就算「疑似�
 
 
 def progress_dir() -> Path:
-    """进度目录。可用环境变量 DSH_PROGRESS_DIR 覆盖。"""
+    """进度目录。优先级：DSH_PROGRESS_DIR > $DSH_HOME/.dsh-progress。
+
+    默认放 DSH_HOME 下，是因为面板本身就是个 profile 级的全局挂件：
+    任何脚本往那儿写都能被看到，不用操心自己在哪个工作区。
+    这个规则必须和插件的 server.js / progress.mjs 完全一致。
+    """
     d = os.environ.get(ENV_DIR)
-    return Path(d) if d else _DEFAULT_DIR
+    if d:
+        return Path(d)
+    home = os.environ.get("DSH_HOME")
+    base = Path(home) if home else Path.home() / ".dsh"
+    return base / _DEFAULT_HOME_SUBDIR
 
 
 _UNSAFE_CHARS = re.compile(r"[^\w.\-]+", re.UNICODE)

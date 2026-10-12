@@ -426,8 +426,8 @@ window.__ModuleLoader__.load({
     return {
       inject: ['slots'],
       apply(ctx) {
-        console.info('[dsh-progress-panel] 已加载（悬浮窗版）；进度中枢请在 127.0.0.1:'
-                     + PORT_FIRST + '-' + PORT_LAST + ' 上运行 hub/hub.py');
+        console.info('[dsh-progress-panel] 已加载；进度服务由插件自身在 127.0.0.1:'
+                     + PORT_FIRST + '-' + PORT_LAST + ' 上提供');
         ctx.slots.inject('shell.overlay', () => ctx.slots.register({
           name: 'shell.overlay',
           id: 'dsh-progress-panel',
