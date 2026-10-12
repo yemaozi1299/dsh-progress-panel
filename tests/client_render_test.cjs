@@ -1,4 +1,4 @@
-﻿/**
+/**
  * dsh-progress-panel/client.js（悬浮窗版）的离线渲染测试。
  *
  * 我装不了这个插件，所以改完必须自己先证一遍：用一套**最小 React 运行时**
@@ -298,6 +298,19 @@ const pt = (x, y, target) => ({
   // 1280x800，药丸 240x32 → left = 1280-240-14 = 1026；top = 800-32-190 = 578
   eq([st.left, st.top], ["1026px", "578px"], "默认落在右下角并抬高 190px 避开鲸鱼");
   ok(String(fab.props.className).indexOf("dragging") < 0, "未拖拽时没有 dragging 类");
+
+  console.log("\n-- 样式（shell.overlay 的 click-through 契约）--");
+  const styleNode = walk(r.tree).find((n) => n && typeof n === "object" && n.type === "style");
+  ok(!!styleNode, "渲染了一个 <style> 元素（随卸载一起回收）");
+  const css = styleNode ? textOf(styleNode) : "";
+  // shell.overlay 那层是 pointer-events:none，而该属性会继承 ——
+  // 少了这一行，悬浮窗看得见但点不动、拖不动，且不会有任何报错。
+  ok(/\.dshpp-fab\{[^}]*pointer-events:\s*auto/.test(css),
+     ".dshpp-fab 显式声明了 pointer-events:auto");
+  ok(/\.dshpp-fab\{[^}]*position:\s*fixed/.test(css), ".dshpp-fab 是 fixed 定位");
+  ok(/--dsw-alias-/.test(css), "颜色走主题变量");
+  ok(!/#[0-9a-fA-F]{6}/.test(css.replace(/var\([^)]*\)/g, "")),
+     "没有硬编码的十六进制颜色（主题变量里的兜底除外）");
 
   console.log("\n-- 多个任务 --");
   global.__fakeTasks = [

@@ -60,7 +60,11 @@ window.__ModuleLoader__.load({
 .dshpp-fab{position:fixed;z-index:${Z};font-size:12px;line-height:1.5;color:${V.fg};
   font-family:inherit;background:${V.bg};border:1px solid ${V.line};border-radius:12px;
   box-shadow:0 6px 24px rgba(0,0,0,.28);user-select:none;-webkit-user-select:none;
-  touch-action:none;overflow:hidden;transition:box-shadow .15s ease}
+  touch-action:none;overflow:hidden;transition:box-shadow .15s ease;
+  /* shell.overlay 这一层是 click-through 的（pointer-events:none），而 pointer-events
+     是继承属性 —— 不显式加回来，悬浮窗看得见但完全点不动、拖不动。
+     官方 slot 文档原话：「entries opt back into pointer events」。 */
+  pointer-events:auto}
 .dshpp-fab:hover{box-shadow:0 8px 28px rgba(0,0,0,.36)}
 .dshpp-fab.dragging{box-shadow:0 14px 40px rgba(0,0,0,.45);cursor:grabbing}
 .dshpp-fab.dragging .dshpp-dot{animation:none}
