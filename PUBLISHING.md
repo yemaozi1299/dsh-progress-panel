@@ -1,4 +1,4 @@
-# 发布清单
+﻿# 发布清单
 
 代码本身已经准备好了，这个文件只记「要发出去还需要动哪些地方」。
 **现在别照着做** —— 其中改包名那一步会让当前已安装的插件失效，得配套重装。
@@ -43,11 +43,12 @@ DSH → 侧边栏 Plugins 页 → 找到它 → 移除 → 重新安装
 
 | 曾经的坑 | 现在 |
 |---|---|
-| 用户要自己启动一个 Python 中枢 | 服务跑在插件的 Host 半边里，装完即有 |
+| 用户要自己启动一个 Python 中枢 | 路由挂在插件的 Host 半边里，装完即有 |
 | 忘了启动就什么都看不到 | 不存在这个问题了 —— DSH 在它就在 |
 | 要装 Python | 不需要，纯 Node |
-| `start-hub.cmd` / 开机自启脚本 | 已删除，不再需要 |
-| 任意网页都能读你的任务名（CORS `*`） | 已收紧到只允许 `127.0.0.1` / `localhost` 的 origin |
+| start-hub.cmd / 开机自启脚本 | 已删除，不再需要 |
+| 插件自己占一个端口（8791~8800） | 改挂到宿主既有的 webserver 上，**不占端口** |
+| 任意网页都能读你的任务名（CORS `*`） | **同源了，CORS 这个面直接消失**（不再跨端口） |
 
 ---
 
@@ -56,7 +57,7 @@ DSH → 侧边栏 Plugins 页 → 找到它 → 移除 → 重新安装
 老实说在前面，免得用户踩：
 
 - **只在 Windows + DSH desktop profile 上验证过**。代码本身是跨平台的
-  （`node:http` / `node:fs`，没有平台相关调用），但没在 macOS / Linux 上跑过
+  （`node:fs` + 注册路由，没有平台相关调用），但没在 macOS / Linux 上跑过
 - **绑定 127.0.0.1，不支持多机 / 远程**。设计上就是本机自用
 - **只存当前状态，不存历史**。任务结束后 1 分钟就从面板上消失；
   要看历史得自己把 `snapshot()` 追加到别处
@@ -67,8 +68,7 @@ DSH → 侧边栏 Plugins 页 → 找到它 → 移除 → 重新安装
   是照着官方包（`dsh-client-ui-deliverables`）抄的，但**没有在真实 DSH 里验证过**
   —— 本机这个会话没有 `plugin_manager`，我装不了插件。
   已经用假 ctx 做了集成测试（`tests/host_test.js`），能覆盖接口形状，
-  覆盖不了「宿主是否允许 Host 插件用 `node:http`」这一点。
-  这一点靠官方同款实现背书：`@deepseek-ai/dsh-host-webserver` 就是这么干的。
+  覆盖不了「真实 webserver 的 register 是否完全按预期工作」。这一点靠官方同款实现背书：DSH 自己的 `client-connection` 就是这么注册 `/api` 路由的。
 
 ---
 
@@ -79,5 +79,4 @@ npm test
 ```
 
 四个套件：插件入口集成、进度服务、悬浮窗渲染、Python 生产端。
-`tests/client_render_test.cjs` 和 `tests/server_test.js` 里的断言写死了
-端口区间 `8791~8800`，如果改了 `PORT_SPAN`，这两处要一起改。
+`tests/server_test.js` 里的断言写死了路由前缀 `/api/progress`；改 `ROUTE_PATH` 的话它和 `client.js` / `board.js` 要一起改（客户端和看板页都按这个常量拼 URL）。

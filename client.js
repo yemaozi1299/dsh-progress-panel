@@ -28,8 +28,9 @@ window.__ModuleLoader__.load({
     const React = require('react');
     const h = React.createElement;
 
-    const PORT_FIRST = 8791;
-    const PORT_LAST = 8800;
+    // 接口挂在宿主的 webserver 上，和这个页面**同源**，
+    // 所以直接打相对路径就行 —— 不用探端口，也完全不需要 CORS。
+    const API = '/api/progress';
     const POLL_MS = 1500;
     const SHOW_DONE_FOR_MS = 60000;   // 完成/失败后再留 1 分钟，好看到收尾
     const LOG_TAIL = 200;
@@ -129,27 +130,6 @@ window.__ModuleLoader__.load({
       try { localStorage.setItem(POS_KEY, JSON.stringify({ x: Math.round(p.x), y: Math.round(p.y) })); } catch (e) {}
     }
 
-    /** 中枢可能落在 8791~8800 里的任意一个，逐个探活后缓存。 */
-    async function discoverHub() {
-      for (let p = PORT_FIRST; p <= PORT_LAST; p++) {
-        const base = 'http://127.0.0.1:' + p;
-        const ctl = new AbortController();
-        const timer = setTimeout(() => ctl.abort(), 700);
-        try {
-          const res = await fetch(base + '/api/health', { signal: ctl.signal, cache: 'no-store' });
-          if (res.ok) {
-            const info = await res.json();
-            if (info && info.ok) return base;
-          }
-        } catch (e) {
-          /* 这个端口没有，试下一个 */
-        } finally {
-          clearTimeout(timer);
-        }
-      }
-      return null;
-    }
-
     function pickVisible(tasks, nowMs) {
       const now = nowMs / 1000;
       return (tasks || []).filter((t) => {
@@ -160,8 +140,8 @@ window.__ModuleLoader__.load({
     }
 
     function Panel() {
-      const [hub, setHub] = React.useState(null);
-      const [probed, setProbed] = React.useState(false);
+      // reachable = 接口通不通。通了且真有任务才渲染，否则彻底静默。
+      const [reachable, setReachable] = React.useState(false);
       const [tasks, setTasks] = React.useState([]);
       const [open, setOpen] = React.useState(false);
       const [logId, setLogId] = React.useState(null);
@@ -173,42 +153,33 @@ window.__ModuleLoader__.load({
       const sizeRef = React.useRef({ w: 0, h: 0 });
       const winRef = React.useRef({ w: 0, h: 0 });
       const rafRef = React.useRef(0);
-      const aliveRef = React.useRef(true);
 
       React.useEffect(() => {
-        aliveRef.current = true;
-        discoverHub().then((base) => {
-          if (!aliveRef.current) return;
-          setHub(base);
-          setProbed(true);
-        });
-        return () => { aliveRef.current = false; };
-      }, []);
-
-      React.useEffect(() => {
-        if (!hub) return undefined;
         let stop = false;
         const tick = async () => {
           try {
-            const res = await fetch(hub + '/api/tasks', { cache: 'no-store' });
+            const res = await fetch(API + '/tasks', { cache: 'no-store' });
             if (!res.ok) throw new Error('HTTP ' + res.status);
             const data = await res.json();
-            if (!stop) setTasks(pickVisible(data.tasks, Date.now()));
+            if (stop) return;
+            setTasks(pickVisible(data.tasks, Date.now()));
+            setReachable(true);
           } catch (e) {
-            if (!stop) setHub(null);   // 中枢没了就回到静默
+            // 插件没激活 / 路由没挂上 —— 静默，别在界面上常驻一个报错
+            if (!stop) setReachable(false);
           }
         };
         tick();
         const id = setInterval(tick, POLL_MS);
         return () => { stop = true; clearInterval(id); };
-      }, [hub]);
+      }, []);
 
       React.useEffect(() => {
-        if (!hub || !logId) { setLog([]); return undefined; }
+        if (!reachable || !logId) { setLog([]); return undefined; }
         let stop = false;
         const tick = async () => {
           try {
-            const res = await fetch(hub + '/api/tasks/' + encodeURIComponent(logId)
+            const res = await fetch(API + '/tasks/' + encodeURIComponent(logId)
                                     + '?tail=' + LOG_TAIL, { cache: 'no-store' });
             if (!res.ok) throw new Error('HTTP ' + res.status);
             const data = await res.json();
@@ -218,7 +189,7 @@ window.__ModuleLoader__.load({
         tick();
         const id = setInterval(tick, POLL_MS);
         return () => { stop = true; clearInterval(id); };
-      }, [hub, logId]);
+      }, [reachable, logId]);
 
       // 位置变了就记下来
       React.useEffect(() => {
@@ -347,7 +318,7 @@ window.__ModuleLoader__.load({
 
       /* ---------------- 渲染 ---------------- */
       try {
-        if (!probed || !hub || tasks.length === 0) return null;
+        if (!reachable || tasks.length === 0) return null;
 
         const primary = tasks[0];
         const pctOf = (t) => (t.pct == null ? null : clamp(t.pct, 0, 100));
@@ -430,8 +401,8 @@ window.__ModuleLoader__.load({
     return {
       inject: ['slots'],
       apply(ctx) {
-        console.info('[dsh-progress-panel] 已加载；进度服务由插件自身在 127.0.0.1:'
-                     + PORT_FIRST + '-' + PORT_LAST + ' 上提供');
+        console.info('[dsh-progress-panel] 已加载；进度接口由 Host 半边挂在 '
+                     + API + '（同源，无需 CORS）');
         ctx.slots.inject('shell.overlay', () => ctx.slots.register({
           name: 'shell.overlay',
           id: 'dsh-progress-panel',

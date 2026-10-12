@@ -2,7 +2,7 @@
   "name": "@local/dsh-progress-panel",
   "version": "0.1.0",
   "private": true,
-  "description": "DSH 插件：界面右下角显示长任务进度悬浮窗。自带本地进度服务，装完即用，不需要额外进程。",
+  "description": "DSH 插件：界面右下角显示长任务进度悬浮窗。进度接口挂到宿主 webserver 上，装完即用 —— 不占端口、不需要额外进程、不需要 CORS。",
   "keywords": [
     "dsh",
     "dsh-plugin",

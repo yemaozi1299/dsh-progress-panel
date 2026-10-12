@@ -126,8 +126,8 @@ let rafSeq = 0;
 const ivs = new Map();
 const rafs = new Map();
 
-function installEnv(hubPort) {
-  const calls = { health: [], tasks: [], log: [] };
+function installEnv(opts = {}) {
+  const calls = { tasks: [], log: [] };
 
   const store = new Map();
   global.localStorage = {
@@ -142,21 +142,15 @@ function installEnv(hubPort) {
     innerHeight: WIN_H,
     addEventListener() {}, removeEventListener() {},
   };
-  global.AbortController = global.AbortController || class { constructor() { this.signal = {}; } abort() {} };
 
+  // 接口和页面同源，所以客户端打的是相对路径 —— 这里断言的正是这一点。
   global.fetch = async (url) => {
     const u = String(url);
-    if (u.includes("/api/health")) {
-      const port = Number((u.match(/127\.0\.0\.1:(\d+)/) || [])[1]);
-      calls.health.push(port);
-      if (port === hubPort) return { ok: true, status: 200, json: async () => ({ ok: true, port }) };
-      throw new Error("ECONNREFUSED");
-    }
-    if (u.includes("/api/tasks/")) {
+    if (u.includes("/api/progress/tasks/")) {
       calls.log.push(u);
       return { ok: true, status: 200, json: async () => ({ task: {}, log: ["10:00:01 已处理 100 页", "10:00:02 已处理 200 页"] }) };
     }
-    if (u.includes("/api/tasks")) {
+    if (u.includes("/api/progress/tasks")) {
       calls.tasks.push(u);
       return { ok: true, status: 200, json: async () => ({ tasks: global.__fakeTasks || [] }) };
     }
@@ -222,10 +216,9 @@ const pt = (x, y, target) => ({
   try { new Function(src); } catch (e) { syntaxOk = false; syntaxErr = e.message; }
   ok(syntaxOk, "client.js 语法可解析", syntaxErr);
 
-  const HUB_PORT = 8796;
-  const { calls, store } = installEnv(HUB_PORT);
-  new Function("window", "fetch", "AbortController", "console", "localStorage", "setInterval", "clearInterval", "setTimeout", "clearTimeout", src)(
-    global.window, global.fetch, global.AbortController, console, global.localStorage,
+  const { calls, store } = installEnv();
+  new Function("window", "fetch", "console", "localStorage", "setInterval", "clearInterval", "setTimeout", "clearTimeout", src)(
+    global.window, global.fetch, console, global.localStorage,
     global.setInterval, global.clearInterval, global.setTimeout, global.clearTimeout
   );
   const mod = global.__loaded;
@@ -272,8 +265,10 @@ const pt = (x, y, target) => ({
   let r = await renderNow();
   eq(r.err, null, "初次渲染不抛异常");
   eq(r.tree, null, "没有任务 → 什么都不渲染（不占地方）");
-  ok(calls.health.length >= 5, "端口探测走了多个端口", "试过 " + calls.health.join(","));
-  eq(calls.health.includes(HUB_PORT), true, `探测命中 ${HUB_PORT}`);
+  ok(calls.tasks.length > 0, "已经在轮询接口了", calls.tasks[0]);
+  eq(calls.tasks[0], "/api/progress/tasks",
+     "打的是**同源相对路径**（没有端口、没有 127.0.0.1，所以不需要 CORS）");
+  ok(!/127\.0\.0\.1|:\d{4}/.test(calls.tasks[0]), "URL 里没有任何主机名或端口");
 
   console.log("\n-- 悬浮药丸（收起态）--");
   global.__fakeTasks = [{

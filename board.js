@@ -55,6 +55,8 @@ export const BOARD_HTML = `<!DOCTYPE html>
 <script>
 const DIR = "__DIR__";
 const expanded = new Set();
+// 接口和这个页面同源（都挂在宿主的 webserver 上），直接打相对路径
+const API = "/api/progress";
 const fmt = (s) => s == null ? "—" : s < 60 ? Math.round(s)+"s"
   : s < 3600 ? Math.floor(s/60)+"m"+String(Math.round(s%60)).padStart(2,"0")+"s"
   : Math.floor(s/3600)+"h"+String(Math.floor((s%3600)/60)).padStart(2,"0")+"m";
@@ -62,7 +64,7 @@ const esc = (s) => String(s==null?"":s).replace(/[&<>"]/g, c => ({"&":"&amp;","<
 
 async function tick(){
   try{
-    const r = await fetch("/api/tasks", {cache:"no-store"});
+    const r = await fetch(API + "/tasks", {cache:"no-store"});
     const {tasks} = await r.json();
     document.getElementById("err").innerHTML = "";
     document.getElementById("sub").textContent =
@@ -104,7 +106,7 @@ async function tick(){
       const el = document.getElementById("log-"+id);
       if (!el) continue;
       try{
-        const r2 = await fetch("/api/tasks/"+encodeURIComponent(id)+"?tail=200", {cache:"no-store"});
+        const r2 = await fetch(API + "/tasks/"+encodeURIComponent(id)+"?tail=200", {cache:"no-store"});
         const d = await r2.json();
         el.textContent = (d.log||[]).join("\\n") || "（没有日志）";
         el.scrollTop = el.scrollHeight;

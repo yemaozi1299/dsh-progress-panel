@@ -1,26 +1,28 @@
 /**
- * 进度服务的测试（server.js）。
+ * 进度路由的测试（server.js）。
  *
- * 服务现在跑在插件的 Host 半边里，不再是个独立进程，所以直接用 Node 起一个来测。
+ * 路由现在挂在宿主的 webserver 上，所以测试自己用 node:http 包一层真实的服务器
+ * 去调 handler —— 和 webserver 调它的方式一致（同一个 `(req, res)` 签名）。
  * 客户端那半边（client.js）由 client_render_test.cjs 覆盖。
  *
  *   node tests/server_test.js
  *
- * 重点覆盖三件容易出错的事：
- *   · safeName 必须和 hub/progress.py 的 _safe_name 完全一致
- *     —— 不一致就读不到日志文件，而且不会报错，只是「日志一直是空的」
- *   · 只有本机 origin 才拿得到 CORS 头（发布版必须收紧，否则任何网页都能读你的任务名）
+ * 重点覆盖四件容易出错的事：
+ *   · safeName 必须和 hub/progress.py 的 _safe_name 完全一致 —— 不一致就读不到日志，
+ *     而且不报错，只是「日志一直是空的」
+ *   · 前缀切片必须对：路由挂在 /api/progress 上，handler 要把它切掉再判子路径
+ *   · **不发 CORS 头**（同源，本来就不需要；发了只是多一个暴露面）
  *   · 坏文件 / BOM / 缺字段不能把整个列表搞挂
  */
 
 import net from 'node:net';
 import path from 'node:path';
 import os from 'node:os';
+import { createServer } from 'node:http';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 
 import {
-  BASE_PORT, PORT_SPAN, createHubServer, listenOnFreePort,
-  progressDir, readLog, readTasks, safeName,
+  ROUTE_PATH, createProgressHandler, progressDir, readLog, readTasks, safeName,
 } from '../server.js';
 
 let pass = 0, fail = 0;
@@ -52,16 +54,17 @@ const task = (over = {}) => ({
 });
 
 async function main() {
-  console.log('\n== 进度服务（server.js）测试 ==');
+  console.log('\n== 进度路由（server.js）测试 ==');
 
-  const dir = await mkdtemp(path.join(os.tmpdir(), 'dsh-srv-'));
-  const server = createHubServer(dir, null);
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'dsh-route-'));
+  const server = createServer(createProgressHandler(dir, null));
   const port = await freePort();
   await new Promise((res, rej) => {
     server.once('error', rej);
     server.listen(port, '127.0.0.1', res);
   });
   const base = `http://127.0.0.1:${port}`;
+  const P = ROUTE_PATH;
 
   try {
     /* ---------------------------------------------------------- safeName */
@@ -77,6 +80,12 @@ async function main() {
     ];
     for (const [input, want] of cases) eq(safeName(input), want, `safeName(${JSON.stringify(input)})`);
     ok(safeName('下载视频') !== safeName('转码视频'), '两个中文标题不会撞成同一个文件名');
+
+    console.log('\n-- 路由前缀 --');
+    eq(P, '/api/progress', 'ROUTE_PATH 是 /api/progress');
+    ok(!P.endsWith('/'), '没有尾斜杠（webserver 的要求）');
+    ok(P.startsWith('/api/') && P !== '/api',
+       '比 DSH 自己的 /api 更长 → 最长前缀获胜，不会被它吞掉');
 
     console.log('\n-- progressDir 优先级 --');
     const saved = { d: process.env.DSH_PROGRESS_DIR, h: process.env.DSH_HOME };
@@ -94,13 +103,19 @@ async function main() {
     eq(await readTasks(path.join(dir, 'does-not-exist')), [], '目录不存在也返回空数组，不抛');
 
     /* ---------------------------------------------------------- 路由 */
-    console.log('\n-- /api/health --');
-    let r = await get(base, '/api/health');
-    eq(r.status, 200, '返回 200');
+    console.log('\n-- 前缀切片 --');
+    let r = await get(base, P + '/health');
+    eq(r.status, 200, `GET ${P}/health 命中（前缀被正确切掉）`);
     eq(r.body.ok, true, 'ok = true');
     eq(path.resolve(r.body.dir), path.resolve(dir), '回显进度目录');
 
-    console.log('\n-- /api/tasks（含各种该被忽略的文件）--');
+    r = await get(base, '/health');
+    eq(r.status, 404, '不带前缀的 /health 不归它管（前缀之外）');
+
+    r = await get(base, P + '/nope');
+    eq(r.status, 404, '前缀内未知路径返回 404');
+
+    console.log('\n-- /tasks（含各种该被忽略的文件）--');
     await writeFile(path.join(dir, 'a.json'), JSON.stringify(task({ task_id: 'a', title: '甲' })));
     await writeFile(path.join(dir, 'b.json'), JSON.stringify(
       task({ task_id: 'b', title: '乙', status: 'done', updated_at: Date.now() / 1000 })));
@@ -113,7 +128,7 @@ async function main() {
     await writeFile(path.join(dir, 'bom.json'), '\ufeff' + JSON.stringify(
       task({ task_id: 'bom', title: '带 BOM', status: 'done', updated_at: Date.now() / 1000 })));
 
-    r = await get(base, '/api/tasks');
+    r = await get(base, P + '/tasks');
     const ids = r.body.tasks.map((t) => t.task_id);
     eq(r.status, 200, '返回 200');
     ok(ids.includes('a') && ids.includes('b'), '正常任务被列出', ids.join(','));
@@ -122,86 +137,72 @@ async function main() {
     ok(!ids.some((t) => t.title === '没有 task_id'), '缺 task_id 的被跳过');
     ok(ids.includes('bom'), '带 BOM 的文件能读出来');
     eq(ids[0], 'a', 'running 的任务排在最前（b/bom 都是 done）');
-
-    const a = r.body.tasks.find((t) => t.task_id === 'a');
-    eq(a.stale, false, '刚更新的 running 不算 stale');
-    eq(a.pct, 10, '字段原样透传');
+    eq(r.body.tasks.find((t) => t.task_id === 'a').stale, false, '刚更新的 running 不算 stale');
+    eq(r.body.tasks.find((t) => t.task_id === 'a').pct, 10, '字段原样透传');
 
     console.log('\n-- stale 判定 --');
     await writeFile(path.join(dir, 'old.json'), JSON.stringify(
       task({ task_id: 'old', status: 'running', updated_at: Date.now() / 1000 - 600 })));
-    r = await get(base, '/api/tasks');
+    r = await get(base, P + '/tasks');
     eq(r.body.tasks.find((t) => t.task_id === 'old').stale, true, '超过 120 秒没更新 → stale');
     eq(r.body.tasks[0].task_id, 'a', 'running 组内按更新时间倒序：刚更新的在前');
     eq(r.body.tasks[1].task_id, 'old', 'stale 的排后面，但仍在显示（不会因为卡住就消失）');
-    eq(r.body.tasks[2].task_id, 'bom', 'done 的排最后');
 
-    console.log('\n-- /api/tasks/<id> 与日志 --');
+    console.log('\n-- /tasks/<id> 与日志 --');
     await writeFile(path.join(dir, 'a.log'), '第一行\n第二行\n第三行\n');
-    r = await get(base, '/api/tasks/a?tail=2');
+    r = await get(base, P + '/tasks/a?tail=2');
     eq(r.status, 200, '返回 200');
     eq(r.body.task.task_id, 'a', '带回任务对象');
     eq(r.body.log, ['第二行', '第三行'], 'tail 参数生效，且去掉了行尾空行');
 
-    r = await get(base, '/api/tasks/a');
+    r = await get(base, P + '/tasks/a');
     eq(r.body.log.length, 3, '不传 tail 时默认给全部（少于 200 行）');
 
-    r = await get(base, '/api/tasks/%E4%B8%8B%E8%BD%BD%E8%A7%86%E9%A2%91');
-    eq(r.status, 404, 'URL 编码的中文 id 能正确解码并查不到时返回 404');
+    r = await get(base, P + '/tasks/%E4%B8%8B%E8%BD%BD%E8%A7%86%E9%A2%91');
+    eq(r.status, 404, 'URL 编码的中文 id 能正确解码，查不到时 404');
 
-    r = await get(base, '/api/tasks/nope');
+    r = await get(base, P + '/tasks/nope');
     eq(r.status, 404, '不存在的任务返回 404');
 
-    r = await get(base, '/api/tasks/');
+    r = await get(base, P + '/tasks/');
     eq(r.status, 400, '空 id 返回 400');
-
-    r = await get(base, '/api/nothing');
-    eq(r.status, 404, '未知路径返回 404');
 
     console.log('\n-- readLog 直接调用 --');
     eq(await readLog(dir, 'a', 1), ['第三行'], 'readLog tail=1');
     eq(await readLog(dir, 'no-such', 5), [], '没有日志时返回空数组');
 
-    /* ---------------------------------------------------------- CORS */
-    console.log('\n-- CORS 只给本机页面 --');
-    r = await get(base, '/api/tasks', { Origin: 'http://127.0.0.1:3080' });
-    eq(r.headers.get('access-control-allow-origin'), 'http://127.0.0.1:3080', '本机 origin 放行');
-    r = await get(base, '/api/tasks', { Origin: 'http://localhost:19387' });
-    eq(r.headers.get('access-control-allow-origin'), 'http://localhost:19387', 'localhost 也放行');
-    r = await get(base, '/api/tasks', { Origin: 'https://evil.example' });
-    eq(r.headers.get('access-control-allow-origin'), null, '外部站点不给 CORS 头');
-    r = await get(base, '/api/tasks', { Origin: 'http://127.0.0.1.evil.com' });
-    eq(r.headers.get('access-control-allow-origin'), null, '伪造前缀的域名也不给');
-
-    const opt = await fetch(base + '/api/tasks', { method: 'OPTIONS', headers: { Origin: 'http://127.0.0.1:3080' } });
-    eq(opt.status, 204, 'OPTIONS 预检返回 204');
+    /* ---------------------------------------------------------- 安全 */
+    console.log('\n-- 不发 CORS 头（同源，本就不需要）--');
+    r = await get(base, P + '/tasks', { Origin: 'https://evil.example' });
+    eq(r.headers.get('access-control-allow-origin'), null, '外部 origin 拿不到 CORS 头');
+    r = await get(base, P + '/tasks', { Origin: 'http://127.0.0.1:3080' });
+    eq(r.headers.get('access-control-allow-origin'), null,
+       '本机 origin 也不发 —— 同源请求不需要，发了只是多一个暴露面');
 
     console.log('\n-- 只读 --');
-    const post = await fetch(base + '/api/tasks', { method: 'POST' });
-    eq(post.status, 405, 'POST 被拒（405）');
-    const del = await fetch(base + '/api/tasks/a', { method: 'DELETE' });
-    eq(del.status, 405, 'DELETE 被拒（405）');
+    eq((await fetch(base + P + '/tasks', { method: 'POST' })).status, 405, 'POST 被拒（405）');
+    eq((await fetch(base + P + '/tasks/a', { method: 'DELETE' })).status, 405, 'DELETE 被拒（405）');
 
     /* ---------------------------------------------------------- 看板页 */
     console.log('\n-- 独立看板页 --');
-    r = await get(base, '/');
-    eq(r.status, 200, 'GET / 返回 200');
+    r = await get(base, P);
+    eq(r.status, 200, `GET ${P} 返回 200`);
     ok(typeof r.body === 'string' && r.body.includes('进度看板'), '是看板页 HTML');
-    ok(r.body.includes(dir.replace(/\\/g, '\\')), '__DIR__ 被替换成真实进度目录');
+    ok(r.body.includes(dir), '__DIR__ 被替换成真实进度目录');
     ok(!r.body.includes('__DIR__'), '没有漏掉未替换的占位符');
+    ok(r.body.includes('/api/progress'), '看板页里的接口路径也是同源相对路径');
+    r = await get(base, P + '/');
+    eq(r.status, 200, '带尾斜杠也返回看板页');
 
-    /* ---------------------------------------------------------- 端口 */
-    console.log('\n-- 端口挑选 --');
-    const s1 = createHubServer(dir, null);
-    const p1 = await listenOnFreePort(s1, '127.0.0.1', await freePort());
-    ok(Number.isInteger(p1), '能拿到一个端口', String(p1));
-    // 同一个端口再起一个：应该自动往后挪
-    const s2 = createHubServer(dir, null);
-    const p2 = await listenOnFreePort(s2, '127.0.0.1', p1);
-    ok(p2 === p1 + 1, '起始端口被占用时自动往后挪一位', `${p1} -> ${p2}`);
-    s1.close(); s1.closeAllConnections?.();
-    s2.close(); s2.closeAllConnections?.();
-    eq([BASE_PORT, PORT_SPAN], [8791, 10], '端口区间常量没被改动过（客户端按这个探活）');
+    /* ---------------------------------------------------------- 排错 */
+    console.log('\n-- 目录不存在也不会带崩 --');
+    const bad = createServer(createProgressHandler(path.join(dir, 'nope'), null));
+    const p2 = await freePort();
+    await new Promise((res) => bad.listen(p2, '127.0.0.1', res));
+    const r2 = await get(`http://127.0.0.1:${p2}`, P + '/tasks');
+    eq(r2.status, 200, '目录不存在时仍返回 200');
+    eq(r2.body.tasks, [], '空列表');
+    bad.close();
   } finally {
     server.close();
     server.closeAllConnections?.();

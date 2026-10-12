@@ -1,19 +1,25 @@
 /**
- * 进度服务 —— 跑在 DSH 的 Node 进程里，不需要任何外部进程。
+ * 进度服务的路由处理器。
  *
- * 早先的版本是个独立的 Python 小服务，要用户自己双击启动，这个对发布来说太鸡肋了：
- * 装个插件还要再管一个进程，忘了起就什么都看不到。
- * 现在服务直接长在插件的 Host 半边里，DSH 启动它就启动，DSH 关掉它就关掉
- * —— 这本来就是对的，DSH 不在也没有面板可看。
+ * 早先的版本自己起了个 HTTP 服务、占 8791~8800 里的一个端口，客户端再去探端口，
+ * 还得开 CORS。那没必要：DSH 自己的 Web 应用**已经**跑着一个 webserver
+ * （`@deepseek-ai/dsh-host-webserver`，就是 GUI 那个端口），插件往上注册一条路由就行。
  *
- * 官方也是这么做的：`@deepseek-ai/dsh-host-webserver` 就是个 Host 插件，
- * 用 `node:http` 的 createServer 起服务，再用 `ctx.effect` 把关闭挂到生命周期上。
+ * 换来的是：
+ *   · 不占端口、没有额外进程
+ *   · **完全不需要 CORS**（同源）
+ *   · 客户端不用再探 10 个端口，直接打相对路径
+ *   · 桌面版也通 —— Electron 会把 `dsh-app://app/api/...` 转发到同一个 webserver
  *
- * 接口刻意和原来那个 Python 中枢保持一致（4 个只读端点），
- * 所以 client.js 一行都不用改。
+ * 路径选 `/api/progress` 是算过的：webserver 的匹配规则是
+ * 「exact 优先，其次**最长前缀获胜**」（packages/host/webserver/src/index.ts:318），
+ * 所以它会稳稳压过 DSH 自己的 `/api` 路由，而不会被它吞掉。
+ *
+ * 代价：DSH 自己的 `/api` 路由带鉴权（`connection.admit`），而我这条更长、绕过了它，
+ * 所以这里是**无鉴权**的。默认 webserver 只绑 127.0.0.1，本机自用没问题；
+ * 部署时若把 host 改成 0.0.0.0，index.js 会打警告。
  */
 
-import { createServer } from 'node:http';
 import { readFile, readdir } from 'node:fs/promises';
 import { existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
@@ -21,12 +27,10 @@ import os from 'node:os';
 
 import { BOARD_HTML } from './board.js';
 
-export const BASE_PORT = 8791;
-export const PORT_SPAN = 10;          // 8791~8800，客户端也在这段里探
-const STALE_AFTER = 120;              // 秒；超过这么久没更新算「疑似卡住」
+/** 路由前缀。前端和看板页都按这个拼 URL。 */
+export const ROUTE_PATH = '/api/progress';
 
-/** 只有本机页面才配读这些数据，别的站点一律不给 CORS 头。 */
-const LOCAL_ORIGIN = /^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/;
+const STALE_AFTER = 120;              // 秒；超过这么久没更新算「疑似卡住」
 
 /**
  * 进度目录。优先级：环境变量 > 插件 config > $DSH_HOME/.dsh-progress。
@@ -43,7 +47,7 @@ export function progressDir(config) {
 
 /**
  * 任务 id → 文件名。必须和 hub/progress.py 的 _safe_name 保持一致，
- * 否则读取端会找不到写出来的日志文件。
+ * 否则读取端会找不到写出来的日志文件（而且不报错，只是日志一直是空的）。
  *
  * 用 \p{L}\p{N} 而不是 [A-Za-z0-9_]：中文要原样保留，
  * 否则「下载视频」和「转码视频」都会被压成 ____ 而互相覆盖。
@@ -55,7 +59,6 @@ export function safeName(s) {
     .replace(/[._\s]+$/, '');
   const out = cleaned.slice(0, 80);
   if (!out) return 'task';
-  // Windows 保留设备名
   const base = out.split('.')[0].toUpperCase();
   if (/^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/.test(base)) return '_' + out;
   return out;
@@ -87,7 +90,7 @@ export async function readTasks(dir) {
       continue;
     }
   }
-  // 跑着的排前面，再按更新时间倒序（和 Python 版行为一致）
+  // 跑着的排前面，再按更新时间倒序
   out.sort((a, b) => {
     const ra = a.status === 'running' ? 0 : 1;
     const rb = b.status === 'running' ? 0 : 1;
@@ -109,91 +112,75 @@ export async function readLog(dir, taskId, tail = 200) {
   }
 }
 
-function send(res, code, body, ctype, origin) {
-  const headers = {
-    'Content-Type': ctype,
+function sendJson(res, obj, code) {
+  const body = JSON.stringify(obj);
+  res.writeHead(code || 200, {
+    'Content-Type': 'application/json; charset=utf-8',
     'Content-Length': Buffer.byteLength(body),
     'Cache-Control': 'no-store',
-  };
-  if (LOCAL_ORIGIN.test(origin || '')) {
-    headers['Access-Control-Allow-Origin'] = origin;
-    headers['Vary'] = 'Origin';
-    headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS';
-    headers['Access-Control-Allow-Headers'] = '*';
-  }
-  res.writeHead(code, headers);
+  });
   res.end(body);
 }
 
-const json = (res, obj, code, origin) =>
-  send(res, code || 200, JSON.stringify(obj), 'application/json; charset=utf-8', origin);
-
-/** 建好但还没 listen 的服务器。路由是只读的，不执行任何东西。 */
-export function createHubServer(dir, log) {
-  return createServer((req, res) => {
-    const origin = req.headers.origin;
-    const url = new URL(req.url || '/', 'http://127.0.0.1');
-    const route = url.pathname;
-
-    if (req.method === 'OPTIONS') return send(res, 204, '', 'text/plain', origin);
-    if (req.method !== 'GET' && req.method !== 'HEAD') {
-      return json(res, { error: 'read-only' }, 405, origin);
-    }
-
-    handle(route, url, res, origin).catch((err) => {
-      if (log) log.warn(err instanceof Error ? err : new Error(String(err)));
-      try { json(res, { error: 'internal' }, 500, origin); } catch { /* 已经发过了 */ }
-    });
+function sendHtml(res, html) {
+  res.writeHead(200, {
+    'Content-Type': 'text/html; charset=utf-8',
+    'Content-Length': Buffer.byteLength(html),
+    'Cache-Control': 'no-store',
   });
-
-  async function handle(route, url, res, origin) {
-    if (route === '/' || route === '/index.html') {
-      return send(res, 200, BOARD_HTML.replace('__DIR__', dir), 'text/html; charset=utf-8', origin);
-    }
-    if (route === '/api/health') {
-      return json(res, { ok: true, dir, uptime_sec: process.uptime() }, 200, origin);
-    }
-    if (route === '/api/tasks') {
-      return json(res, { tasks: await readTasks(dir), now: Date.now() / 1000, dir }, 200, origin);
-    }
-    if (route.startsWith('/api/tasks/')) {
-      const id = decodeURIComponent(route.slice('/api/tasks/'.length)).replace(/\/+$/, '');
-      if (!id) return json(res, { error: 'missing task id' }, 400, origin);
-      let tail = parseInt(url.searchParams.get('tail') || '200', 10);
-      if (!Number.isFinite(tail)) tail = 200;
-      tail = Math.max(1, Math.min(2000, tail));
-      const tasks = await readTasks(dir);
-      const task = tasks.find((t) => t.task_id === id);
-      if (!task) return json(res, { error: 'no such task: ' + id }, 404, origin);
-      return json(res, { task, log: await readLog(dir, id, tail) }, 200, origin);
-    }
-    return json(res, { error: 'not found' }, 404, origin);
-  }
+  res.end(html);
 }
 
 /**
- * 依次尝试 8791~8800，返回真正抢到的端口。
- * 客户端也是在这段里逐个探活的，所以两边不用额外约定。
+ * 造一个挂到 `webServer.register` 上的 handler。
+ *
+ * 服务是只读的：不执行任何东西，只读目录和日志文件。
+ *
+ * @param dir - 进度目录。
+ * @param log - 可选的 ctx.logger，用来记录意外错误。
+ * @returns `(req, res) => Promise<void>`，直接交给 webserver。
  */
-export async function listenOnFreePort(server, host, start) {
-  let lastErr;
-  for (let p = start; p < start + PORT_SPAN; p++) {
+export function createProgressHandler(dir, log) {
+  return async function handle(req, res) {
     try {
-      await new Promise((resolve, reject) => {
-        const onError = (err) => { server.off('listening', onListening); reject(err); };
-        const onListening = () => { server.off('error', onError); resolve(); };
-        server.once('error', onError);
-        server.once('listening', onListening);
-        server.listen(p, host);
-      });
-      return p;
+      if (req.method !== 'GET' && req.method !== 'HEAD') {
+        return sendJson(res, { error: 'read-only' }, 405);
+      }
+      const url = new URL(req.url || '/', 'http://localhost');
+      // 自己再验一次前缀，别假设调用方筛过了。
+      // webserver 的规则是「pathname === prefix 或 prefix + '/'」，
+      // 这里复刻它 —— 否则 '/health' 这种短路径被 slice 之后会变成 ''，
+      // 阴差阳错地命中「根路径 → 看板页」。
+      if (url.pathname !== ROUTE_PATH && !url.pathname.startsWith(ROUTE_PATH + '/')) {
+        return sendJson(res, { error: 'not found' }, 404);
+      }
+      const rest = url.pathname.slice(ROUTE_PATH.length);
+      if (rest === '' || rest === '/') {
+        return sendHtml(res, BOARD_HTML.replace('__DIR__', dir));
+      }
+      if (rest === '/health') {
+        return sendJson(res, { ok: true, dir, uptime_sec: process.uptime() }, 200);
+      }
+      if (rest === '/tasks') {
+        return sendJson(res, { tasks: await readTasks(dir), now: Date.now() / 1000, dir }, 200);
+      }
+      if (rest.startsWith('/tasks/')) {
+        const id = decodeURIComponent(rest.slice('/tasks/'.length)).replace(/\/+$/, '');
+        if (!id) return sendJson(res, { error: 'missing task id' }, 400);
+        let tail = parseInt(url.searchParams.get('tail') || '200', 10);
+        if (!Number.isFinite(tail)) tail = 200;
+        tail = Math.max(1, Math.min(2000, tail));
+        const tasks = await readTasks(dir);
+        const task = tasks.find((t) => t.task_id === id);
+        if (!task) return sendJson(res, { error: 'no such task: ' + id }, 404);
+        return sendJson(res, { task, log: await readLog(dir, id, tail) }, 200);
+      }
+      return sendJson(res, { error: 'not found' }, 404);
     } catch (err) {
-      lastErr = err;
-      if (err && err.code === 'EADDRINUSE') continue;
-      throw err;
+      if (log) log.warn(err instanceof Error ? err : new Error(String(err)));
+      try { sendJson(res, { error: 'internal' }, 500); } catch { /* 已经发过了 */ }
     }
-  }
-  throw lastErr || new Error('8791~8800 全被占用');
+  };
 }
 
 /** 确保目录存在；只是读的话不存在也没关系，但先建好能省掉一堆判断。 */

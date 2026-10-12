@@ -1,4 +1,4 @@
-# dsh-progress-panel
+﻿# dsh-progress-panel
 
 给 **DeepSeek Harness (DSH)** 用的长任务进度悬浮窗。
 
@@ -25,12 +25,19 @@
 
 ## 装完即用，不需要额外启动任何东西
 
-进度服务跑在插件的 **Host 半边**里（`index.js` → `server.js`），
-用 `node:http` 在 DSH 自己的 Node 进程里起一个只读的本地服务。
-DSH 启动它就在，DSH 关掉它就没 —— **没有独立进程、不需要 Python、没有开机自启要配**。
+进度接口由插件的 **Host 半边**挂到 **DSH 自己的 webserver** 上
+（`ctx.inject(['webServer'], ...)`，就是 GUI 那个端口），路径 `/api/progress`。
+DSH 起来它就在，DSH 关掉它就没 —— **没有独立进程、不占端口、不需要 Python、没有开机自启要配**。
 
-这一点是刻意设计的：早先的版本是个要用户自己双击启动的 Python 小服务，
-对「装个插件」来说太鸡肋了，忘了起就什么都看不到。
+这一点是刻意设计的，中间走过两版弯路：
+
+1. 最早是个要用户自己双击启动的 Python 小服务 —— 对「装个插件」来说太鸡肋，忘了起就什么都看不到
+2. 然后改成插件自己起 `node:http` 服务 —— 不用手动启动了，但要占 8791~8800 里的一个端口、
+   要开 CORS（跨端口）、客户端还得探 10 个端口
+3. 现在是**注册到宿主既有的 webserver 上** —— 端口、CORS、探测全部消失
+
+> 路径选 `/api/progress` 是算过的：webserver 的匹配规则是「exact 优先，其次**最长前缀获胜**」，
+> 所以它会稳稳压过 DSH 自己的 `/api` 路由，而不会被它吞掉。
 
 ---
 
@@ -43,25 +50,28 @@ DSH 启动它就在，DSH 关掉它就没 —— **没有独立进程、不需�
 $DSH_HOME/.dsh-progress/          ← 唯一的约定，两个生产端助手都往这儿写
       ▲
       │  读
-┌─────┴──────────────────────────────────────────┐
-│ DSH 进程里的插件                                │
-│  index.js  起服务 + 给 Agent 注入使用说明        │
-│  server.js 只读 HTTP（4 个端点）                 │
-│  client.js 右下角的悬浮窗（shell.overlay 槽位）  │
-└────────────────────────────────────────────────┘
+┌─────┴───────────────────────────────────────────────┐
+│ DSH 进程里的插件                                     │
+│  index.js  注册路由 + 给 Agent 注入使用说明           │
+│  server.js 只读路由处理器（挂 /api/progress）         │
+│  client.js 右下角的悬浮窗（shell.overlay 槽位）       │
+│  board.js  独立看板页（同一条路由的根路径）           │
+└──────────────────────────────────────────────────────┘
 ```
 
 | 文件 | 作用 |
 |---|---|
-| `index.js` / `server.js` / `board.js` | Host 半边：起进度服务、注入提示词 |
+| `index.js` / `server.js` / `board.js` | Host 半边：把路由挂到宿主 webserver、注入提示词 |
 | `client.js` | 浏览器半边：悬浮窗 |
 | `hub/progress.py` | Python 生产端助手 |
 | `hub/progress.mjs` | Node 生产端助手 |
 | `hub/watch.py` | 包住任意命令的包装器 |
 
-服务是**只读**的，只听 `127.0.0.1`，CORS 也只放行 `127.0.0.1` / `localhost` 的页面
-（早期版本用的是 `*`，那意味着你访问的任何网页都能读你的任务名）。
-它另外自带一个独立看板页：`http://127.0.0.1:8791/`。
+路由是**只读**的，和 GUI 同源同端口，所以**没有任何 CORS 头**
+（早期版本跨端口，用 `Access-Control-Allow-Origin: *` 放行 —— 那意味着你访问的任何网页
+都能读你的任务名；后来收紧到只放行本机 origin；现在同源，这个面直接没了）。
+
+看板页在路由的根路径上：`<GUI 地址>/api/progress`（比如 `http://127.0.0.1:3080/api/progress`）。
 
 ---
 
@@ -76,13 +86,14 @@ error: profile "desktop" is managed exclusively by the Electron application
 
 走界面：打开 DSH → **左侧边栏的 Plugins 页** → 安装 bundle → 填本目录的**绝对路径**。
 
-装完刷新页面。控制台会出现：
+装完刷新页面（Host 半边改了代码要**重启 DSH** 才会重新加载，见下面的「改完不生效」）。
+控制台会出现：
 
 ```
-[dsh-progress-panel] 已加载；进度服务由插件自身在 127.0.0.1:8791-8800 上提供
+[dsh-progress-panel] 已加载；进度接口由 Host 半边挂在 /api/progress（同源，无需 CORS）
 ```
 
-**就这两步，没有第三步。** 想确认服务活着，浏览器打开 `http://127.0.0.1:8791/`。
+**就这两步，没有第三步。** 想确认路由活着，浏览器打开 `<GUI 地址>/api/progress`。
 
 ---
 
@@ -123,7 +134,7 @@ python hub\watch.py --title "下载视频" --unit 个 --count-regex "Downloaded"
 **排序**：在跑的在前，同组按最后更新时间倒序。
 **数量**：药丸只显示第一个 + `+N`；展开卡片列出全部，每个可单独看日志。
 
-> 独立看板页 `http://127.0.0.1:8791/` 不做筛选，把目录里的全列出来 —— 想翻历史用看板页。
+> 独立看板页（`<GUI 地址>/api/progress`）不做筛选，把目录里的全列出来 —— 想翻历史用看板页。
 
 ---
 
@@ -174,15 +185,13 @@ npm test
 | 套件 | 覆盖 |
 |---|---|
 | `tests/host_test.js` | 插件入口：起服务、注入提示词、卸载时关服务 |
-| `tests/server_test.js` | 服务：路由、排序、stale、BOM、**CORS 收紧**、端口递补 |
+| `tests/server_test.js` | 路由：前缀切片、排序、stale、BOM、**不发 CORS 头**、只读 |
 | `tests/client_render_test.cjs` | 悬浮窗：渲染、拖拽落点、展开不越界、位置持久化 |
 | `tests/test_progress.py` | Python 生产端：生命周期、原子写、读取、BOM |
 
 共 150+ 项断言。前两个套件用假 ctx / 假 DOM 把真代码跑起来，不是纸面检查。
 
-`host_test.js` 覆盖不到的只有一点：**DSH 的插件加载器是否允许 Host 插件用 `node:http`**。
-已用假 ctx 验证了接口形状，这一条靠官方同款实现背书
-（`@deepseek-ai/dsh-host-webserver` 就是 `createServer` + `ctx.effect` 关服务）。
+`host_test.js` 覆盖不到的只有一点：**真实 webserver 的 `register` 是否完全按预期签名工作**。已用假 ctx 验证了接口形状，这一条靠官方同款实现背书 —— DSH 自己的 `client-connection` 就是这么注册 `/api` 路由的（`packages/client/connection/src/index.ts:139`）。
 
 ---
 
